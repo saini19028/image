@@ -1,6 +1,7 @@
 import os
 import logging
 from io import BytesIO
+import asyncio
 
 from PIL import Image, ImageDraw, ImageFont
 from telegram import Update
@@ -87,6 +88,43 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def default_watermark_task(app: Application, user_id: int) -> None:
+    """Run when user didn't send text in TIMEOUT_SECONDS."""
+    try:
+        await asyncio.sleep(TIMEOUT_SECONDS)
+    except asyncio.CancelledError:
+        # Text aa gaya, task cancel ho chuka
+        return
+
+    pending = PENDING.get(user_id)
+    if not pending:
+        return  # Already processed
+
+    chat_id = pending["chat_id"]
+    image_bytes = pending["image_bytes"]
+
+    try:
+        wm_bytes = add_watermark(image_bytes, DEFAULT_WATERMARK)
+    except Exception:
+        logger.exception("Error while adding default watermark")
+        await app.bot.send_message(
+            chat_id=chat_id,
+            text="❌ Koi error aa gaya default watermark lagate time.",
+        )
+        PENDING.pop(user_id, None)
+        return
+
+    PENDING.pop(user_id, None)
+
+    out = BytesIO(wm_bytes)
+    out.name = "watermarked.jpg"
+    await app.bot.send_photo(
+        chat_id=chat_id,
+        photo=out,
+        caption=f"⌛ Time khatam.\nDefault watermark laga diya: {DEFAULT_WATERMARK}",
+    )
+
+
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     chat_id = update.effective_chat.id
@@ -102,22 +140,19 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     bio.seek(0)
     image_bytes = bio.read()
 
-    # Cancel old job if exist
+    # Purana task ho to cancel
     old = PENDING.get(user.id)
-    if old and old.get("job"):
-        old["job"].schedule_removal()
+    if old and old.get("task"):
+        old["task"].cancel()
 
-    # Schedule default watermark job
-    job = context.job_queue.run_once(
-        default_watermark_job,
-        when=TIMEOUT_SECONDS,
-        data={"user_id": user.id},
-        name=f"wm_timeout_{user.id}",
+    # Naya timeout task
+    task = context.application.create_task(
+        default_watermark_task(context.application, user.id)
     )
 
     PENDING[user.id] = {
         "image_bytes": image_bytes,
-        "job": job,
+        "task": task,
         "chat_id": chat_id,
     }
 
@@ -140,13 +175,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     pending = PENDING.get(user.id)
     if not pending:
-        # No pending image, ignore or send info
+        # No pending image, normal message – ignore
         return
 
-    # Cancel timeout job
-    job = pending.get("job")
-    if job:
-        job.schedule_removal()
+    # Cancel timeout task
+    task = pending.get("task")
+    if task:
+        task.cancel()
 
     image_bytes = pending["image_bytes"]
 
@@ -169,41 +204,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
 
-async def default_watermark_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Run when user didn't send text in TIMEOUT_SECONDS."""
-    job = context.job
-    user_id = job.data["user_id"]
-
-    pending = PENDING.get(user_id)
-    if not pending:
-        return  # Already processed
-
-    chat_id = pending["chat_id"]
-    image_bytes = pending["image_bytes"]
-
-    try:
-        wm_bytes = add_watermark(image_bytes, DEFAULT_WATERMARK)
-    except Exception:
-        logger.exception("Error while adding default watermark")
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="❌ Koi error aa gaya default watermark lagate time.",
-        )
-        PENDING.pop(user_id, None)
-        return
-
-    PENDING.pop(user_id, None)
-
-    out = BytesIO(wm_bytes)
-    out.name = "watermarked.jpg"
-    await context.bot.send_photo(
-        chat_id=chat_id,
-        photo=out,
-        caption=f"⌛ Time khatam.\n"
-        f"Default watermark laga diya: {DEFAULT_WATERMARK}",
-    )
-
-
 def main() -> None:
     token = os.getenv("BOT_TOKEN")
     if not token:
@@ -219,7 +219,6 @@ def main() -> None:
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text)
     )
 
-    # Long polling (Heroku/Render dono par easy)
     logger.info("Bot started polling...")
     application.run_polling()
 
