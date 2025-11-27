@@ -1,0 +1,1 @@
+Pworker: python bot.pyrocfile
