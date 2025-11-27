@@ -26,45 +26,35 @@ logger = logging.getLogger(__name__)
 
 # --- Globals ---
 
-# image → text pending (20 sec वाला सिस्टम)
-PENDING = {}
-
-# प्रति user watermark settings
-USER_SETTINGS = {}
-
-# extra state (जैसे transparency पूछते समय)
-USER_STATE = {}
+PENDING = {}          # pending watermark (photo + 20 sec)
+USER_SETTINGS = {}    # प्रति user settings
+USER_STATE = {}       # extra state (jaise transparency)
 
 DEFAULT_WATERMARK = "@RPSC_RSMSSB_BOARD"
 TIMEOUT_SECONDS = 20
 
-# default settings
 DEFAULT_SETTINGS = {
-    "size_factor": 1.0,                      # 1x size
-    "color": (255, 255, 255),               # white
-    "alpha": 220,                           # transparency (0–255)
+    "size_factor": 1.0,          # 1x size
+    "color": (255, 255, 255),    # white
+    "alpha": 220,                # 0–255
     "position": "bottom_right",
     "style": "normal",
 }
 
-
 # ---------- Helper functions ----------
 
 def get_user_settings(user_id: int) -> dict:
-    """Per-user settings, default copy if not present."""
     if user_id not in USER_SETTINGS:
         USER_SETTINGS[user_id] = dict(DEFAULT_SETTINGS)
     return USER_SETTINGS[user_id]
 
 
 def style_text(text: str, style: str) -> str:
-    """Different text styles."""
     if style == "upper":
         return text.upper()
     if style == "lower":
         return text.lower()
     if style == "spaced":
-        # प्रत्येक अक्षर के बीच space
         return " ".join(list(text))
     if style == "boxed":
         return f"【{text}】"
@@ -75,7 +65,6 @@ def add_watermark(image_bytes: bytes, text: str, settings: dict) -> bytes:
     """Return new image bytes with text watermark as per settings."""
     img = Image.open(BytesIO(image_bytes)).convert("RGBA")
 
-    # settings
     size_factor = settings.get("size_factor", 1.0)
     color = settings.get("color", (255, 255, 255))
     alpha = settings.get("alpha", 220)
@@ -84,15 +73,12 @@ def add_watermark(image_bytes: bytes, text: str, settings: dict) -> bytes:
 
     text = style_text(text, style)
 
-    # transparent layer for text
     txt_layer = Image.new("RGBA", img.size, (255, 255, 255, 0))
     draw = ImageDraw.Draw(txt_layer)
 
-    # base font size relative to width, then multiply by user factor
     base_font_size = max(20, img.size[0] // 20)
     font_size = max(10, int(base_font_size * size_factor))
 
-    # Try a TTF font, fallback to default
     font = None
     for path in [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -115,56 +101,69 @@ def add_watermark(image_bytes: bytes, text: str, settings: dict) -> bytes:
     W, H = img.size
     margin = 20
 
-    # RGBA colours
     r, g, b = color
     main_fill = (r, g, b, max(0, min(alpha, 255)))
     shadow_fill = (0, 0, 0, 160)
 
-    def draw_at(x, y):
-        # shadow
-        draw.text((x + 2, y + 2), text, font=font, fill=shadow_fill)
-        # main text
-        draw.text((x, y), text, font=font, fill=main_fill)
+    def draw_at(x, y, d: ImageDraw.ImageDraw):
+        d.text((x + 2, y + 2), text, font=font, fill=shadow_fill)
+        d.text((x, y), text, font=font, fill=main_fill)
 
-    # positions
+    # ---- normal (non-diagonal) positions ----
     if position == "top_right":
         x = max(margin, W - tw - margin)
         y = margin
-        draw_at(x, y)
+        draw_at(x, y, draw)
 
     elif position == "top_left":
         x = margin
         y = margin
-        draw_at(x, y)
+        draw_at(x, y, draw)
 
     elif position == "bottom_left":
         x = margin
         y = max(margin, H - th - margin)
-        draw_at(x, y)
+        draw_at(x, y, draw)
 
     elif position == "center":
         x = max(margin, (W - tw) // 2)
         y = max(margin, (H - th) // 2)
-        draw_at(x, y)
+        draw_at(x, y, draw)
 
-    elif position == "diag_tl_br":
-        # left top → right bottom, 3 बार repeat
-        for frac in (0.1, 0.5, 0.9):
-            x = (W - tw) * frac
-            y = (H - th) * frac
-            draw_at(x, y)
-
-    elif position == "diag_bl_tr":
-        # left bottom → right top
-        for frac in (0.1, 0.5, 0.9):
-            x = (W - tw) * frac
-            y = H - th - (H - th) * frac
-            draw_at(x, y)
-
-    else:  # default = bottom_right
+    elif position == "bottom_right":
         x = max(margin, W - tw - margin)
         y = max(margin, H - th - margin)
-        draw_at(x, y)
+        draw_at(x, y, draw)
+
+    # ---- diagonal single-text positions (tिरछा) ----
+    elif position in ("diag_tl_br", "diag_bl_tr"):
+        # separate temp layer
+        temp = Image.new("RGBA", img.size, (255, 255, 255, 0))
+        d2 = ImageDraw.Draw(temp)
+
+        # पहले center पर horizontal draw
+        cx = (W - tw) // 2
+        cy = (H - th) // 2
+        draw_at(cx, cy, d2)
+
+        # angle चुनो
+        angle = -35 if position == "diag_tl_br" else 35
+
+        # rotate पूरा layer, फिर center से crop karke original size
+        rotated = temp.rotate(angle, expand=True)
+        rw, rh = rotated.size
+        left = max(0, (rw - W) // 2)
+        top = max(0, (rh - H) // 2)
+        cropped = rotated.crop((left, top, left + W, top + H))
+
+        # इस cropped rotated layer को main txt_layer पे डाल दो
+        txt_layer = Image.alpha_composite(txt_layer, cropped)
+
+    else:
+        # safety – default bottom_right
+        x = max(margin, W - tw - margin)
+        y = max(margin, H - th - margin)
+        draw_at(x, y, draw)
 
     watermarked = Image.alpha_composite(img, txt_layer).convert("RGB")
     out = BytesIO()
@@ -231,7 +230,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     await query.answer()
 
-    # main menus
     if data == "wm_open_menu":
         await query.message.reply_text(
             "Image watermark settings:", reply_markup=settings_menu_keyboard()
@@ -354,9 +352,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.message.reply_text("Text style चुनें:", reply_markup=kb)
         return
 
-    # --- Actual setters ---
-
-    # size
+    # setters
     if data.startswith("set_size_"):
         mapping = {
             "set_size_small": 0.7,
@@ -369,7 +365,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.message.reply_text("✅ Watermark size अपडेट हो गया.")
         return
 
-    # colour
     if data.startswith("set_color_"):
         cmap = {
             "set_color_red": (255, 0, 0),
@@ -386,7 +381,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.message.reply_text("✅ Watermark colour सेट हो गया.")
         return
 
-    # position
     if data.startswith("set_pos_"):
         pmap = {
             "set_pos_tr": "top_right",
@@ -402,7 +396,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.message.reply_text("✅ Watermark position सेट हो गया.")
         return
 
-    # style
     if data.startswith("set_style_"):
         smap = {
             "set_style_normal": "normal",
@@ -417,10 +410,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
 
-# ----- Watermark main flow (photo + 20 sec text) -----
+# ----- watermark flow -----
 
 async def default_watermark_task(app: Application, user_id: int) -> None:
-    """Run when user didn't send text in TIMEOUT_SECONDS."""
     try:
         await asyncio.sleep(TIMEOUT_SECONDS)
     except asyncio.CancelledError:
@@ -497,7 +489,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     text = (update.message.text or "").strip()
     user_id = user.id
 
-    # 1) अगर transparency सेट mode में हैं
+    # transparency mode
     if USER_STATE.get(user_id) == "awaiting_transparency":
         try:
             val = int(text)
@@ -512,16 +504,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text(f"✅ Transparency {val}% सेट हो गई.")
         return
 
-    # commands को ignore
     if text.startswith("/"):
         return
 
     pending = PENDING.get(user_id)
     if not pending:
-        # normal chat, ignore
         return
 
-    # timeout task cancel
     task = pending.get("task")
     if task:
         task.cancel()
@@ -548,7 +537,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
 
-# ---------- Main ----------
+# ---------- main ----------
 
 def main() -> None:
     token = os.getenv("BOT_TOKEN")
@@ -557,14 +546,11 @@ def main() -> None:
 
     application = Application.builder().token(token).build()
 
-    # commands
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("image_watermark", cmd_image_watermark))
 
-    # callbacks (buttons)
     application.add_handler(CallbackQueryHandler(button_callback))
 
-    # messages
     application.add_handler(
         MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_photo)
     )
