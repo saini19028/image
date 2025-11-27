@@ -38,10 +38,62 @@ DEFAULT_SETTINGS = {
     "color": (255, 255, 255),    # white
     "alpha": 220,                # 0–255
     "position": "bottom_right",
-    "style": "normal",
+    "font": "default",           # font key (नीचे map में)
 }
 
-# ---------- Helper functions ----------
+# ---------------- FONT PATH MAP ----------------
+# अगर कोई खास font चाहिए तो उसकी .ttf file
+# repo में "fonts/" folder में डालकर नाम वही रखो
+FONT_PATHS = {
+    # fallback / default sans-serif
+    "default": [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+    ],
+
+    # Serif Fonts
+    "tnr": ["fonts/Times New Roman.ttf", "fonts/times.ttf"],
+    "garamond": ["fonts/Garamond.ttf"],
+    "georgia": ["fonts/Georgia.ttf"],
+    "bodoni": ["fonts/Bodoni.ttf"],
+    "baskerville": ["fonts/Baskerville.ttf"],
+    "cambria": ["fonts/Cambria.ttf"],
+    "playfair": ["fonts/PlayfairDisplay.ttf"],
+
+    # Sans-serif Fonts
+    "arial": ["fonts/Arial.ttf"],
+    "helvetica": ["fonts/Helvetica.ttf"],
+    "calibri": ["fonts/Calibri.ttf"],
+    "verdana": ["fonts/Verdana.ttf"],
+    "opensans": ["fonts/OpenSans-Regular.ttf"],
+    "roboto": ["fonts/Roboto-Regular.ttf"],
+    "lato": ["fonts/Lato-Regular.ttf"],
+    "futura": ["fonts/Futura.ttf"],
+    "montserrat": ["fonts/Montserrat-Regular.ttf"],
+    "publicsans": ["fonts/PublicSans-Regular.ttf"],
+
+    # Script Fonts
+    "brushscript": ["fonts/BrushScript.ttf"],
+    "pacifico": ["fonts/Pacifico.ttf"],
+    "greatvibes": ["fonts/GreatVibes-Regular.ttf"],
+    "lucidahand": ["fonts/LucidaHandwriting.ttf"],
+    "segoescript": ["fonts/SegoeScript.ttf"],
+    "zapfino": ["fonts/Zapfino.ttf"],
+
+    # Monospace Fonts
+    "couriernew": ["fonts/Courier New.ttf", "fonts/courbd.ttf"],
+    "consolas": ["fonts/Consolas.ttf"],
+    "lucidaconsole": ["fonts/LucidaConsole.ttf"],
+    "monaco": ["fonts/Monaco.ttf"],
+
+    # Display / Decorative
+    "impact": ["fonts/Impact.ttf"],
+    "papyrus": ["fonts/Papyrus.ttf"],
+    "comicsans": ["fonts/Comic Sans MS.ttf"],
+    "copperplate": ["fonts/Copperplate Gothic.ttf"],
+    "curlz": ["fonts/Curlz MT.ttf"],
+}
+
 
 def get_user_settings(user_id: int) -> dict:
     if user_id not in USER_SETTINGS:
@@ -49,16 +101,15 @@ def get_user_settings(user_id: int) -> dict:
     return USER_SETTINGS[user_id]
 
 
-def style_text(text: str, style: str) -> str:
-    if style == "upper":
-        return text.upper()
-    if style == "lower":
-        return text.lower()
-    if style == "spaced":
-        return " ".join(list(text))
-    if style == "boxed":
-        return f"【{text}】"
-    return text
+def load_font(font_key: str, font_size: int):
+    """font_key से font load करने की कोशिश, नहीं मिला तो default fallback."""
+    paths = FONT_PATHS.get(font_key, []) + FONT_PATHS["default"]
+    for p in paths:
+        try:
+            return ImageFont.truetype(p, font_size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
 
 
 def add_watermark(image_bytes: bytes, text: str, settings: dict) -> bytes:
@@ -69,9 +120,7 @@ def add_watermark(image_bytes: bytes, text: str, settings: dict) -> bytes:
     color = settings.get("color", (255, 255, 255))
     alpha = settings.get("alpha", 220)
     position = settings.get("position", "bottom_right")
-    style = settings.get("style", "normal")
-
-    text = style_text(text, style)
+    font_key = settings.get("font", "default")
 
     txt_layer = Image.new("RGBA", img.size, (255, 255, 255, 0))
     draw = ImageDraw.Draw(txt_layer)
@@ -79,19 +128,7 @@ def add_watermark(image_bytes: bytes, text: str, settings: dict) -> bytes:
     base_font_size = max(20, img.size[0] // 20)
     font_size = max(10, int(base_font_size * size_factor))
 
-    font = None
-    for path in [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
-        "arial.ttf",
-    ]:
-        try:
-            font = ImageFont.truetype(path, font_size)
-            break
-        except Exception:
-            continue
-    if font is None:
-        font = ImageFont.load_default()
+    font = load_font(font_key, font_size)
 
     # text size
     bbox = draw.textbbox((0, 0), text, font=font)
@@ -135,32 +172,25 @@ def add_watermark(image_bytes: bytes, text: str, settings: dict) -> bytes:
         y = max(margin, H - th - margin)
         draw_at(x, y, draw)
 
-    # ---- diagonal single-text positions (tिरछा) ----
+    # ---- diagonal single-text positions (तिरछा एक बार) ----
     elif position in ("diag_tl_br", "diag_bl_tr"):
-        # separate temp layer
         temp = Image.new("RGBA", img.size, (255, 255, 255, 0))
         d2 = ImageDraw.Draw(temp)
 
-        # पहले center पर horizontal draw
         cx = (W - tw) // 2
         cy = (H - th) // 2
         draw_at(cx, cy, d2)
 
-        # angle चुनो
         angle = -35 if position == "diag_tl_br" else 35
-
-        # rotate पूरा layer, फिर center से crop karke original size
         rotated = temp.rotate(angle, expand=True)
         rw, rh = rotated.size
         left = max(0, (rw - W) // 2)
         top = max(0, (rh - H) // 2)
         cropped = rotated.crop((left, top, left + W, top + H))
 
-        # इस cropped rotated layer को main txt_layer पे डाल दो
         txt_layer = Image.alpha_composite(txt_layer, cropped)
 
     else:
-        # safety – default bottom_right
         x = max(margin, W - tw - margin)
         y = max(margin, H - th - margin)
         draw_at(x, y, draw)
@@ -185,7 +215,7 @@ def settings_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("🔠 Watermark size", callback_data="wm_size_menu"),
+                InlineKeyboardButton("🔠 Size", callback_data="wm_size_menu"),
                 InlineKeyboardButton("🎨 Colour", callback_data="wm_color_menu"),
             ],
             [
@@ -196,8 +226,11 @@ def settings_menu_keyboard() -> InlineKeyboardMarkup:
                     "🌫 Transparency", callback_data="wm_transparency_menu"
                 ),
                 InlineKeyboardButton(
-                    "📝 Text style", callback_data="wm_style_menu"
+                    "📝 Text Font", callback_data="wm_style_menu"
                 ),
+            ],
+            [
+                InlineKeyboardButton("⬅ Back", callback_data="back_main"),
             ],
         ]
     )
@@ -230,6 +263,21 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     await query.answer()
 
+    # ---- Back buttons ----
+    if data == "back_main":
+        await query.message.reply_text(
+            "Main menu:", reply_markup=main_menu_keyboard()
+        )
+        return
+
+    if data == "back_settings":
+        USER_STATE.pop(user_id, None)
+        await query.message.reply_text(
+            "Image watermark settings:", reply_markup=settings_menu_keyboard()
+        )
+        return
+
+    # ---- Open menus ----
     if data == "wm_open_menu":
         await query.message.reply_text(
             "Image watermark settings:", reply_markup=settings_menu_keyboard()
@@ -246,6 +294,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 [
                     InlineKeyboardButton("Large", callback_data="set_size_large"),
                     InlineKeyboardButton("X-Large", callback_data="set_size_xlarge"),
+                ],
+                [
+                    InlineKeyboardButton("⬅ Back", callback_data="back_settings"),
                 ],
             ]
         )
@@ -271,6 +322,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     InlineKeyboardButton("🔵 नीला", callback_data="set_color_blue"),
                     InlineKeyboardButton("🟢 हरा", callback_data="set_color_green"),
                 ],
+                [
+                    InlineKeyboardButton("⬅ Back", callback_data="back_settings"),
+                ],
             ]
         )
         await query.message.reply_text("Watermark colour चुनें:", reply_markup=kb)
@@ -280,35 +334,30 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         kb = InlineKeyboardMarkup(
             [
                 [
+                    InlineKeyboardButton("Right Top", callback_data="set_pos_tr"),
+                    InlineKeyboardButton("Left Top", callback_data="set_pos_tl"),
+                ],
+                [
+                    InlineKeyboardButton("Bottom Right", callback_data="set_pos_br"),
+                    InlineKeyboardButton("Bottom Left", callback_data="set_pos_bl"),
+                ],
+                [
+                    InlineKeyboardButton("Center", callback_data="set_pos_center"),
+                ],
+                [
                     InlineKeyboardButton(
-                        "Right Top", callback_data="set_pos_tr"
-                    ),
-                    InlineKeyboardButton(
-                        "Left Top", callback_data="set_pos_tl"
+                        "LeftTop → RightBottom",
+                        callback_data="set_pos_diag_tl_br",
                     ),
                 ],
                 [
                     InlineKeyboardButton(
-                        "Bottom Right", callback_data="set_pos_br"
-                    ),
-                    InlineKeyboardButton(
-                        "Bottom Left", callback_data="set_pos_bl"
+                        "LeftBottom → RightTop",
+                        callback_data="set_pos_diag_bl_tr",
                     ),
                 ],
                 [
-                    InlineKeyboardButton(
-                        "Center", callback_data="set_pos_center"
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        "LeftTop → RightBottom", callback_data="set_pos_diag_tl_br"
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        "LeftBottom → RightTop", callback_data="set_pos_diag_bl_tr"
-                    ),
+                    InlineKeyboardButton("⬅ Back", callback_data="back_settings"),
                 ],
             ]
         )
@@ -317,42 +366,111 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if data == "wm_transparency_menu":
         USER_STATE[user_id] = "awaiting_transparency"
+        kb = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("⬅ Back", callback_data="back_settings"),
+                ]
+            ]
+        )
         await query.message.reply_text(
-            "Transparency (%) bhejo (0 = bilkul halka, 100 = full गाढ़ा).\n"
-            "उदाहरण: 60"
+            "Transparency (%) bhejo (0 = हल्का, 100 = ज़्यादा गाढ़ा).\n"
+            "उदाहरण: 60",
+            reply_markup=kb,
         )
         return
 
     if data == "wm_style_menu":
+        # Fonts menu
         kb = InlineKeyboardMarkup(
             [
+                # Serif
                 [
-                    InlineKeyboardButton(
-                        "Normal", callback_data="set_style_normal"
-                    ),
-                    InlineKeyboardButton(
-                        "UPPER", callback_data="set_style_upper"
-                    ),
+                    InlineKeyboardButton("Times New Roman", callback_data="font_tnr"),
+                    InlineKeyboardButton("Garamond", callback_data="font_garamond"),
                 ],
                 [
-                    InlineKeyboardButton(
-                        "lower", callback_data="set_style_lower"
-                    ),
-                    InlineKeyboardButton(
-                        "s p a c e d", callback_data="set_style_spaced"
-                    ),
+                    InlineKeyboardButton("Georgia", callback_data="font_georgia"),
+                    InlineKeyboardButton("Baskerville", callback_data="font_baskerville"),
                 ],
                 [
-                    InlineKeyboardButton(
-                        "【Boxed】", callback_data="set_style_boxed"
-                    ),
+                    InlineKeyboardButton("Cambria", callback_data="font_cambria"),
+                    InlineKeyboardButton("Playfair Display", callback_data="font_playfair"),
+                ],
+                [
+                    InlineKeyboardButton("Bodoni", callback_data="font_bodoni"),
+                ],
+
+                # Sans-serif
+                [
+                    InlineKeyboardButton("Arial", callback_data="font_arial"),
+                    InlineKeyboardButton("Helvetica", callback_data="font_helvetica"),
+                ],
+                [
+                    InlineKeyboardButton("Calibri", callback_data="font_calibri"),
+                    InlineKeyboardButton("Verdana", callback_data="font_verdana"),
+                ],
+                [
+                    InlineKeyboardButton("Open Sans", callback_data="font_opensans"),
+                    InlineKeyboardButton("Roboto", callback_data="font_roboto"),
+                ],
+                [
+                    InlineKeyboardButton("Lato", callback_data="font_lato"),
+                    InlineKeyboardButton("Futura", callback_data="font_futura"),
+                ],
+                [
+                    InlineKeyboardButton("Montserrat", callback_data="font_montserrat"),
+                    InlineKeyboardButton("Public Sans", callback_data="font_publicsans"),
+                ],
+
+                # Script
+                [
+                    InlineKeyboardButton("Brush Script", callback_data="font_brushscript"),
+                    InlineKeyboardButton("Pacifico", callback_data="font_pacifico"),
+                ],
+                [
+                    InlineKeyboardButton("Great Vibes", callback_data="font_greatvibes"),
+                    InlineKeyboardButton("Lucida Handwriting", callback_data="font_lucidahand"),
+                ],
+                [
+                    InlineKeyboardButton("Segoe Script", callback_data="font_segoescript"),
+                    InlineKeyboardButton("Zapfino", callback_data="font_zapfino"),
+                ],
+
+                # Monospace
+                [
+                    InlineKeyboardButton("Courier New", callback_data="font_couriernew"),
+                    InlineKeyboardButton("Consolas", callback_data="font_consolas"),
+                ],
+                [
+                    InlineKeyboardButton("Lucida Console", callback_data="font_lucidaconsole"),
+                    InlineKeyboardButton("Monaco", callback_data="font_monaco"),
+                ],
+
+                # Display / decorative
+                [
+                    InlineKeyboardButton("Impact", callback_data="font_impact"),
+                    InlineKeyboardButton("Papyrus", callback_data="font_papyrus"),
+                ],
+                [
+                    InlineKeyboardButton("Comic Sans MS", callback_data="font_comicsans"),
+                    InlineKeyboardButton("Copperplate Gothic", callback_data="font_copperplate"),
+                ],
+                [
+                    InlineKeyboardButton("Curlz MT", callback_data="font_curlz"),
+                ],
+
+                [
+                    InlineKeyboardButton("⬅ Back", callback_data="back_settings"),
                 ],
             ]
         )
-        await query.message.reply_text("Text style चुनें:", reply_markup=kb)
+        await query.message.reply_text("Text font चुनें:", reply_markup=kb)
         return
 
-    # setters
+    # ---- setters ----
+
+    # size
     if data.startswith("set_size_"):
         mapping = {
             "set_size_small": 0.7,
@@ -365,6 +483,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.message.reply_text("✅ Watermark size अपडेट हो गया.")
         return
 
+    # colour
     if data.startswith("set_color_"):
         cmap = {
             "set_color_red": (255, 0, 0),
@@ -381,6 +500,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.message.reply_text("✅ Watermark colour सेट हो गया.")
         return
 
+    # position
     if data.startswith("set_pos_"):
         pmap = {
             "set_pos_tr": "top_right",
@@ -396,17 +516,49 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.message.reply_text("✅ Watermark position सेट हो गया.")
         return
 
-    if data.startswith("set_style_"):
-        smap = {
-            "set_style_normal": "normal",
-            "set_style_upper": "upper",
-            "set_style_lower": "lower",
-            "set_style_spaced": "spaced",
-            "set_style_boxed": "boxed",
+    # fonts
+    if data.startswith("font_"):
+        fmap = {
+            "font_tnr": "tnr",
+            "font_garamond": "garamond",
+            "font_georgia": "georgia",
+            "font_bodoni": "bodoni",
+            "font_baskerville": "baskerville",
+            "font_cambria": "cambria",
+            "font_playfair": "playfair",
+
+            "font_arial": "arial",
+            "font_helvetica": "helvetica",
+            "font_calibri": "calibri",
+            "font_verdana": "verdana",
+            "font_opensans": "opensans",
+            "font_roboto": "roboto",
+            "font_lato": "lato",
+            "font_futura": "futura",
+            "font_montserrat": "montserrat",
+            "font_publicsans": "publicsans",
+
+            "font_brushscript": "brushscript",
+            "font_pacifico": "pacifico",
+            "font_greatvibes": "greatvibes",
+            "font_lucidahand": "lucidahand",
+            "font_segoescript": "segoescript",
+            "font_zapfino": "zapfino",
+
+            "font_couriernew": "couriernew",
+            "font_consolas": "consolas",
+            "font_lucidaconsole": "lucidaconsole",
+            "font_monaco": "monaco",
+
+            "font_impact": "impact",
+            "font_papyrus": "papyrus",
+            "font_comicsans": "comicsans",
+            "font_copperplate": "copperplate",
+            "font_curlz": "curlz",
         }
-        if data in smap:
-            settings["style"] = smap[data]
-            await query.message.reply_text("✅ Text style सेट हो गया.")
+        if data in fmap:
+            settings["font"] = fmap[data]
+            await query.message.reply_text("✅ Text font सेट हो गया.")
         return
 
 
@@ -491,6 +643,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     # transparency mode
     if USER_STATE.get(user_id) == "awaiting_transparency":
+        if text.startswith("/"):
+            # command भेज दिया, ignore + state साफ
+            USER_STATE.pop(user_id, None)
+            return
         try:
             val = int(text)
             val = max(0, min(100, val))
