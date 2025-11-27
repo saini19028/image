@@ -1,1 +1,1 @@
-Pworker: python bot.pyrocfile
+worker: python bot.py
