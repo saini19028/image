@@ -19,6 +19,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from telegram.error import Forbidden, BadRequest
 
 logging.basicConfig(
     format="%(asctime)s — %(name)s — %(levelname)s — %(message)s",
@@ -33,6 +34,12 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URL = os.getenv("MONGODB_URL")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+
+# FORCE-SUBSCRIBE CONFIG
+CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))  # force-join वाला चैनल ID (-100...)
+FORCE_SUB_URL = os.getenv("FORCE_SUB_URL", "")  # अगर direct channel link देना हो तो
+FORCE_PHOTO_URL = os.getenv("FORCE_PHOTO_URL", "https://files.catbox.moe/wqop01.jpg")
+OWNER_CONTACT = os.getenv("OWNER_CONTACT", "@saini_sahab_19")
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN env missing")
@@ -132,7 +139,6 @@ FALLBACK_FONTS = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
 ]
 
-
 # ------------------------------------------------------------
 # DATABASE FUNCTIONS
 # ------------------------------------------------------------
@@ -165,6 +171,79 @@ async def update_settings(user_id: int, settings: dict):
         upsert=True,
     )
 
+# ------------------------------------------------------------
+# FORCE-SUBSCRIBE HELPER
+# ------------------------------------------------------------
+async def ensure_subscribed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """
+    Force channel join check.
+    Returns:
+        True  -> user ko join karna पड़ेगा (handler ko return कर देना)
+        False -> sab ठीक है, आगे ka handler चलेगा
+    """
+    # अगर force-sub off रखना hai, to CHANNEL_ID env मत दो / 0 रहने दो
+    if CHANNEL_ID == 0:
+        return False
+
+    user = update.effective_user
+    msg = update.effective_message
+
+    if not user:
+        return False
+
+    # Owner ko force-sub se free रखते हैं
+    if user.id == OWNER_ID:
+        return False
+
+    try:
+        member = await context.bot.get_chat_member(CHANNEL_ID, user.id)
+        status = getattr(member, "status", "")
+        # banned
+        if status == "kicked":
+            await msg.reply_text(f"You are Banned. Contact -- {OWNER_CONTACT}")
+            return True
+        # left / restricted => treat as not joined
+        if status not in ("creator", "administrator", "member"):
+            raise Forbidden("User not joined")
+        # member ok
+        return False
+
+    except Forbidden:
+        # bot ko access nahi ya user member list me nahi => not joined
+        pass
+    except BadRequest:
+        # private/supergroup etc. error, phir bhi join msg dikha denge
+        pass
+    except Exception as e:
+        logger.warning(f"ensure_subscribed error: {e}")
+
+    # Yaha tak aaya matlab user joined nahi hai / error aayi
+    url = FORCE_SUB_URL
+    if not url:
+        try:
+            invite = await context.bot.create_chat_invite_link(CHANNEL_ID)
+            url = invite.invite_link
+        except Exception as e:
+            logger.warning(f"Invite create failed: {e}")
+            url = None
+
+    text = "Join our channel to use the bot"
+    reply_markup = None
+    if url:
+        reply_markup = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("Join Now...", url=url)]]
+        )
+
+    try:
+        await msg.reply_photo(
+            photo=FORCE_PHOTO_URL,
+            caption=text,
+            reply_markup=reply_markup,
+        )
+    except Exception:
+        await msg.reply_text(text, reply_markup=reply_markup)
+
+    return True
 
 # ------------------------------------------------------------
 # FONT HELPERS
@@ -205,7 +284,6 @@ def apply_transform(text: str, transform: str) -> str:
     if transform == "boxed":
         return f"【{text}】"
     return text
-
 
 # ------------------------------------------------------------
 # WATERMARK ENGINE
@@ -274,7 +352,6 @@ def create_watermark(img_bytes: bytes, text: str, settings: dict) -> bytes:
     out.seek(0)
     return out.read()
 
-
 # ------------------------------------------------------------
 # KEYBOARDS
 # ------------------------------------------------------------
@@ -300,11 +377,14 @@ def settings_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("⬅ Back", callback_data="back_main")],
     ])
 
-
 # ------------------------------------------------------------
 # START
 # ------------------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # FORCE-SUB CHECK
+    if await ensure_subscribed(update, context):
+        return
+
     await get_user(update.effective_user.id)
     await update.message.reply_text(
         "👋 Namaste!\n"
@@ -315,13 +395,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=main_menu()
     )
 
-
 # ------------------------------------------------------------
 # BROADCAST (/broadcast message)
 # ------------------------------------------------------------
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         return await update.message.reply_text("❌ Owner Only Command.")
+
+    # Owner ke liye bhi agar channel join compulsary rakhna ho to isko ON chhodo:
+    if await ensure_subscribed(update, context):
+        return
 
     text = update.message.text.split(" ", 1)
     if len(text) < 2 or not text[1].strip():
@@ -340,11 +423,14 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ Broadcast sent to {sent} users.")
 
-
 # ------------------------------------------------------------
 # BUTTON CALLBACK
 # ------------------------------------------------------------
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # FORCE-SUB CHECK
+    if await ensure_subscribed(update, context):
+        return
+
     query = update.callback_query
     user_id = query.from_user.id
     await query.answer()
@@ -540,11 +626,14 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update_settings(user_id, settings)
         return await query.message.reply_text("✅ Text transform updated.")
 
-
 # ------------------------------------------------------------
 # PHOTO HANDLER
 # ------------------------------------------------------------
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # FORCE-SUB CHECK
+    if await ensure_subscribed(update, context):
+        return
+
     user = update.effective_user
     chat_id = update.effective_chat.id
 
@@ -572,11 +661,14 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Warana default `{DEFAULT_WATERMARK}` use hoga."
     )
 
-
 # ------------------------------------------------------------
 # TEXT HANDLER
 # ------------------------------------------------------------
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # FORCE-SUB CHECK
+    if await ensure_subscribed(update, context):
+        return
+
     user = update.effective_user
     text = update.message.text.strip()
 
@@ -618,7 +710,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption=f"✅ Watermark added.\nFont: {font_label(settings['font_key'])}",
     )
 
-
 # ------------------------------------------------------------
 # TIMEOUT TASK
 # ------------------------------------------------------------
@@ -647,7 +738,6 @@ async def timeout_task(app: Application, user_id: int):
         out,
         caption=f"⌛ Time up! Default watermark added.\nFont: {font_label(settings['font_key'])}",
     )
-
 
 # ------------------------------------------------------------
 # MAIN
